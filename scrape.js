@@ -13,26 +13,76 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6Ik
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+async function connectWithRetry(maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`🔌 Connecting to Bright Data (attempt ${attempt}/${maxRetries})...`);
+            const browser = await chromium.connectOverCDP(SBR_WS_ENDPOINT);
+            return browser;
+        } catch (e) {
+            console.log(`⚠️ Connection attempt ${attempt} failed:`, e.message);
+            if (attempt === maxRetries) throw e;
+            await new Promise(r => setTimeout(r, 5000 * attempt));
+        }
+    }
+}
+
 async function scrapeLinkedIn() {
     console.log('🔌 Connecting to Bright Data Scraping Browser...');
-
-    const browser = await chromium.connectOverCDP(SBR_WS_ENDPOINT);
+    
+    const browser = await connectWithRetry(3);
     const context = browser.contexts()[0];
     const page = context.pages()[0];
 
     try {
-        console.log('🔐 Logging into LinkedIn...');
+        console.log('🔐 Checking LinkedIn session...');
         await page.goto('https://www.linkedin.com/login', { waitUntil: 'networkidle' });
+        
+        // Check if already logged in (redirected to feed)
+        const url = page.url();
+        if (url.includes('/feed') || !url.includes('/login')) {
+            console.log('✅ Already logged in!');
+        } else {
+            // Perform login
+            await page.fill('input[name="session_key"]', LINKEDIN_EMAIL);
+            await page.fill('input[name="session_password"]', LINKEDIN_PASSWORD);
+            await page.click('button[type="submit"]');
+            
+            // Wait for login with multiple fallback strategies
+            console.log('⏳ Waiting for login to complete...');
+            
+            // Strategy 1: Wait for feed URL
+            try {
+                await page.waitForURL('**/feed/**', { timeout: 30000 });
+                console.log('✅ Logged in (feed detected)!');
+            } catch (e) {
+                console.log('⚠️ Feed navigation timeout, checking for alternatives...');
+                
+                // Strategy 2: Check if we're on a security/challenge page
+                const currentUrl = page.url();
+                console.log('🔍 Current URL:', currentUrl);
+                
+                if (currentUrl.includes('checkpoint') || currentUrl.includes('challenge')) {
+                    console.log('🔒 Security checkpoint detected - manual intervention may be needed');
+                    await page.waitForTimeout(60000);
+                }
+                
+                // Strategy 3: Check if we're already on a logged-in page
+                const isLoggedIn = await page.evaluate(() => {
+                    return !!document.querySelector('.global-nav__me') || 
+                           !!document.querySelector('.feed-identity-module') ||
+                           !!document.querySelector('a[href="/messaging/"]');
+                });
+                
+                if (isLoggedIn) {
+                    console.log('✅ Logged in (detected via page elements)!');
+                } else {
+                    throw new Error('Login failed - unable to detect logged-in state. URL: ' + currentUrl);
+                }
+            }
+        }
 
-        await page.fill('input[name="session_key"]', LINKEDIN_EMAIL);
-        await page.fill('input[name="session_password"]', LINKEDIN_PASSWORD);
-        await page.click('button[type="submit"]');
-
-        // Wait for login
-        await page.waitForURL('**/feed/**', { timeout: 60000 });
-        console.log('✅ Logged in!');
-
-        // Go to messages
+        // Go to messages with retry
         console.log('📬 Navigating to messages...');
         await page.goto('https://www.linkedin.com/messaging/', { waitUntil: 'networkidle' });
         await page.waitForTimeout(3000);
