@@ -87,6 +87,64 @@ async function scrapeLinkedIn() {
         await page.goto('https://www.linkedin.com/messaging/', { waitUntil: 'networkidle' });
         await page.waitForTimeout(3000);
 
+        // Handle Cookie Banner - LinkedIn's new consent screen
+        try {
+            console.log('🍪 Checking for cookie/consent banner...');
+            await page.waitForTimeout(2000);
+            
+            // Multiple strategies for cookie acceptance
+            const cookieSelectors = [
+                'button[action-type="ACCEPT"]',
+                'button[data-control-name="ga-cookie.accept"]', 
+                '.artdeco-global-alert-action__button',
+                'button:has-text("Accept")',
+                'button:has-text("Accepter")',
+                '[data-testid="accept-cookie-banner-button"]',
+                '.truste-button',
+                'button[id*="accept"]',
+                'button[class*="accept"]',
+                'button:has-text("Agree")',
+                'button:has-text("Continue")'
+            ];
+            
+            for (const selector of cookieSelectors) {
+                const btn = await page.$(selector);
+                if (btn) {
+                    console.log(`🍪 Clicking cookie button: ${selector}`);
+                    await btn.click();
+                    await page.waitForTimeout(1500);
+                    break;
+                }
+            }
+            
+            // Alternative: Click by text content evaluation
+            const clicked = await page.evaluate(() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const acceptBtn = buttons.find(b => 
+                    b.textContent?.toLowerCase().includes('accept') ||
+                    b.textContent?.toLowerCase().includes('accepter') ||
+                    b.textContent?.toLowerCase().includes('agree') ||
+                    b.textContent?.toLowerCase().includes('continue') ||
+                    b.textContent?.toLowerCase().includes('consent')
+                );
+                if (acceptBtn) {
+                    acceptBtn.click();
+                    return true;
+                }
+                return false;
+            });
+            
+            if (clicked) {
+                console.log('🍪 Cookie banner handled via text matching');
+                await page.waitForTimeout(1500);
+            } else {
+                console.log('🍪 No cookie banner found or already accepted');
+            }
+            
+        } catch (e) { 
+            console.log('🍪 Cookie handling error:', e.message); 
+        }
+
         // Get conversation list
         const conversationElements = await page.$$('.msg-conversation-listitem');
         console.log(`📨 Found ${conversationElements.length} conversations`);
